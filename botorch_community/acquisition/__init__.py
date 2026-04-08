@@ -20,8 +20,10 @@ from botorch_community.acquisition.rei import (
     qLogRegionalExpectedImprovement,
 )
 from botorch_community.acquisition.scorebo import qSelfCorrectingBayesianOptimization
+from botorch_community.acquisition.local_entropy_search import LocalEntropySearch
 
 __all__ = [
+    "LocalEntropySearch",
     "LogRegionalExpectedImprovement",
     "qBayesianQueryByComittee",
     "qBayesianVarianceReduction",
