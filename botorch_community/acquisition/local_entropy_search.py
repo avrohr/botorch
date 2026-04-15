@@ -18,6 +18,9 @@ The implementation here follows a practical approximation:
    the local sequence variable as predictive entropy minus expected conditional
    entropy over the conditioned models.
 
+Based on the original implementation [Stenger2026]_ and the notebook by Paul Brunzema
+[Brunzema2026]_.
+
 References:
 
 .. [Stenger2026]
@@ -25,12 +28,16 @@ References:
    Local Entropy Search over Descent Sequences for Bayesian Optimization.
    In The Fourteenth International Conference on Learning Representations (ICLR),
    2026. https://openreview.net/forum?id=cPxmLZmFa7
+.. [Brunzema2026]
+   P. Brunzema.
+   Local Entropy Search Acquisition Function in BoTorch.
+   https://github.com/brunzema/les_botorch/
 
 Contributor: avrohr
 """
 
 from __future__ import annotations
-from typing import Any, cast
+from typing import Any
 
 import torch
 from botorch.acquisition.acquisition import AcquisitionFunction
