@@ -30,9 +30,7 @@ Contributor: avrohr
 """
 
 from __future__ import annotations
-
-import inspect
-from typing import Any
+from typing import Any, cast
 
 import torch
 from botorch.acquisition.acquisition import AcquisitionFunction
@@ -42,7 +40,7 @@ from botorch.sampling.pathwise.posterior_samplers import (
     draw_matheron_paths,
 )
 from botorch.utils.transforms import t_batch_mode_transform
-from gpytorch.models import ExactGP, GP
+from gpytorch.models import ExactGP
 from torch import Tensor
 from torch.nn import ModuleList
 from torch.optim import Optimizer
@@ -50,13 +48,11 @@ from torch.optim import Optimizer
 
 class LocalEntropySearch(AcquisitionFunction):
     r"""Local Entropy Search acquisition function.
-
-    This implementation currently supports only ``q=1`` evaluations in ``forward``.
     """
 
     def __init__(
         self,
-        model: GP,
+        model: ExactGP,
         x_incumbent: Tensor,
         num_path_samples: int = 128,
         num_descent_steps: int = 128,
@@ -75,16 +71,13 @@ class LocalEntropySearch(AcquisitionFunction):
         r"""Initialize LocalEntropySearch.
 
         Args:
-            model: A fitted single-output model supporting
-                ``condition_on_observations``.
+            model: A fitted unbatched exact single-output BoTorch GP model
+                supporting ``condition_on_observations``.
             x_incumbent: Incumbent design point as a ``1 x d`` tensor or ``d`` tensor.
             num_path_samples: Number of posterior function paths for LES.
             num_descent_steps: Number of optimization steps for each sampled path.
             learning_rate: Step size of the sequence optimizer.
             optimizer_cls: Torch optimizer class used for sequence updates.
-                ``optimizer_cls.step()`` must be callable without required
-                arguments, so optimizers that require closures such as
-                ``torch.optim.LBFGS`` are not supported.
             optimizer_kwargs: Extra keyword arguments passed to ``optimizer_cls``.
             maximize: If True, follow ascent sequences. If False, follow descent
                 sequences.
@@ -109,9 +102,18 @@ class LocalEntropySearch(AcquisitionFunction):
         """
         super().__init__(model=model)
 
+        if not isinstance(model, Model) or not isinstance(model, ExactGP):
+            raise ValueError(
+                "LocalEntropySearch currently supports only exact single-output "
+                "BoTorch GP models."
+            )
         if getattr(model, "num_outputs", 1) != 1:
             raise ValueError(
                 "LocalEntropySearch currently supports only single-output models."
+            )
+        if len(model.batch_shape) > 0:
+            raise ValueError(
+                "LocalEntropySearch currently does not support batched GP models."
             )
         if num_path_samples < 1:
             raise ValueError(
@@ -124,12 +126,6 @@ class LocalEntropySearch(AcquisitionFunction):
         if learning_rate <= 0:
             raise ValueError(
                 f"learning_rate must be positive, but got {learning_rate}."
-            )
-        if self._optimizer_step_requires_args(optimizer_cls):
-            raise ValueError(
-                "optimizer_cls.step() must not require additional arguments. "
-                "Use a first-order optimizer whose step can be called without a "
-                "closure, such as Adam or SGD."
             )
         if min_variance <= 0:
             raise ValueError(f"min_variance must be positive, but got {min_variance}.")
@@ -214,26 +210,6 @@ class LocalEntropySearch(AcquisitionFunction):
 
         self._build_conditioned_models()
 
-    def _apply(self, fn: Any) -> LocalEntropySearch:
-        super()._apply(fn)
-        self._clear_prediction_caches()
-        return self
-
-    @staticmethod
-    def _optimizer_step_requires_args(optimizer_cls: type[Optimizer]) -> bool:
-        step_signature = inspect.signature(optimizer_cls.step)
-        return any(
-            parameter.name != "self"
-            and parameter.default is inspect.Signature.empty
-            and parameter.kind
-            in (
-                inspect.Parameter.POSITIONAL_ONLY,
-                inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                inspect.Parameter.KEYWORD_ONLY,
-            )
-            for parameter in step_signature.parameters.values()
-        )
-
     def _build_conditioned_models(self) -> None:
         # Exact GPs require initialized prediction caches before fantasizing.
         with torch.no_grad():
@@ -259,17 +235,6 @@ class LocalEntropySearch(AcquisitionFunction):
                 )
             )
             self.conditional_model_num_paths.append(end - start)
-
-    def _clear_prediction_caches(self) -> None:
-        self._clear_prediction_caches_for_model(self.model)
-        for conditional_model in self.conditional_models:
-            self._clear_prediction_caches_for_model(conditional_model)
-
-    @staticmethod
-    def _clear_prediction_caches_for_model(model: Model) -> None:
-        for module in model.modules():
-            if isinstance(module, ExactGP):
-                module.prediction_strategy = None
 
     def _generate_pathwise_sequences(self) -> tuple[Tensor, Tensor]:
         with torch.no_grad():
