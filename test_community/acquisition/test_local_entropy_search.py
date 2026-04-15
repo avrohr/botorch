@@ -4,10 +4,23 @@
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
+from unittest import mock
+
 import torch
 from botorch.models import SingleTaskGP
-from botorch.utils.testing import BotorchTestCase
+from botorch.utils.testing import BotorchTestCase, MockModel, MockPosterior
 from botorch_community.acquisition.local_entropy_search import LocalEntropySearch
+from torch.optim import Optimizer
+
+
+class NoOpOptimizer(Optimizer):
+    def __init__(self, params, lr: float = 1.0) -> None:
+        super().__init__(params, {"lr": lr})
+
+    def step(self, closure=None):
+        if closure is not None:
+            closure()
+        return None
 
 
 class TestLocalEntropySearch(BotorchTestCase):
@@ -59,11 +72,17 @@ class TestLocalEntropySearch(BotorchTestCase):
         train_X, model = self._get_model()
         cases = [
             {"x_incumbent": train_X[:2]},
+            {"x_incumbent": torch.rand(3, device=self.device, dtype=torch.double)},
+            {"num_path_samples": 0},
+            {"num_descent_steps": 0},
+            {"learning_rate": 0.0},
+            {"min_variance": 0.0},
             {"sequence_subsample_size": 0},
             {"sequence_discretization_size": 0},
             {"conditional_model_chunk_size": 0},
             {"convergence_tol": -1e-6},
             {"virtual_observation_noise": 0.0},
+            {"bounds": torch.rand(3, 2, device=self.device, dtype=torch.double)},
         ]
 
         for kwargs in cases:
@@ -80,6 +99,34 @@ class TestLocalEntropySearch(BotorchTestCase):
                     LocalEntropySearch(
                         **init_kwargs,
                     )
+
+    def test_multi_output_model_raises(self) -> None:
+        mean = torch.zeros(1, 2, device=self.device, dtype=torch.double)
+        model = MockModel(MockPosterior(mean=mean))
+        with mock.patch(
+            "botorch.utils.testing.MockModel.num_outputs",
+            new_callable=mock.PropertyMock,
+        ) as mock_num_outputs:
+            mock_num_outputs.return_value = 2
+            with self.assertRaisesRegex(ValueError, "single-output models"):
+                LocalEntropySearch(
+                    model=model,
+                    x_incumbent=torch.zeros(2, device=self.device, dtype=torch.double),
+                    num_path_samples=2,
+                    num_descent_steps=2,
+                    learning_rate=0.05,
+                )
+
+    def test_incumbent_dimension_mismatch_raises(self) -> None:
+        train_X, model = self._get_model(d=2)
+        with self.assertRaisesRegex(ValueError, "dimension mismatch"):
+            LocalEntropySearch(
+                model=model,
+                x_incumbent=torch.rand(3, device=self.device, dtype=torch.double),
+                num_path_samples=2,
+                num_descent_steps=2,
+                learning_rate=0.05,
+            )
 
     def test_default_chunking_matches_explicit_full_batching(self) -> None:
         dtype = torch.double
@@ -214,3 +261,16 @@ class TestLocalEntropySearch(BotorchTestCase):
                 learning_rate=0.05,
                 optimizer_cls=torch.optim.LBFGS,
             )
+
+    def test_early_stopping_breaks_when_paths_stop_moving(self) -> None:
+        train_X, model = self._get_model()
+        acqf = LocalEntropySearch(
+            model=model,
+            x_incumbent=train_X[0],
+            num_path_samples=3,
+            num_descent_steps=10,
+            learning_rate=0.05,
+            optimizer_cls=NoOpOptimizer,
+            convergence_tol=1e-12,
+        )
+        self.assertTrue(all(path.shape[0] == 2 for path in acqf.sequence_X_per_path))
